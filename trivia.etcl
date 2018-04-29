@@ -1,0 +1,269 @@
+# td = trivia data; tr = trivia settings; tt = trivia temp; tu = trivia user info; th = trivia history
+
+# bindings
+bind pub - $tr(cmd)trivia pub:trivia
+bind pub - $tr(cmd)profile pub:profile
+bind pub - a pub:trivia:a
+bind pub - b pub:trivia:b
+bind pub - c pub:trivia:c
+bind pub - d pub:trivia:d
+bind msg - start_answer_delay msg:start_answer_delay
+bind msg - start_game_delay msg:start_game_delay
+
+# channel commands
+proc pub:trivia {nick uhost handle chan text} {
+  global tr
+  if {[string tolower [lindex $text 0]] == "on"} {
+    set tr(status) 1
+    msg $tr(chan) "!NOTICE! Trivia has been started by $nick ($uhost)."
+  } elseif {[string tolower [lindex $text 0]] == "off"} {
+    set tr(status) 0
+    msg $tr(chan) "!NOTICE! Trivia has been stopped by $nick ($uhost)."
+  } else {
+    notice $nick "Invalid request: You need to specify a status (on/off)."
+  }
+}
+
+proc pub:profile {nick uhost handle chan text} {
+  global tu
+  if {[lindex $text 0] == ""} {
+    set user $nick
+  } else {
+    set user [lindex $text 0]
+  }
+  
+  if {[array names tu [string tolower $user]:nick] == ""} {
+    notice $nick "Invalid request: $user has not played."
+  } else {
+    incr tu([string tolower $user]:lost) 1
+    incr tu([string tolower $user]:won) 1
+    incr tu([string tolower $user]:lost) -1
+    incr tu([string tolower $user]:won) -1
+    notice $nick "$tu([string tolower $user]:nick) currently has $tu([string tolower $user]:points) point(s), has lost $tu([string tolower $user]:lost) games and won $tu([string tolower $user]:won) games."
+  }
+}
+
+proc pub:trivia:a {nick uhost handle chan text} {
+  get_answer $nick $chan $uhost a
+}
+
+proc pub:trivia:b {nick uhost handle chan text} {
+  get_answer $nick $chan $uhost b
+}
+
+proc pub:trivia:c {nick uhost handle chan text} {
+  get_answer $nick $chan $uhost c
+}
+
+proc pub:trivia:d {nick uhost handle chan text} {
+  get_answer $nick $chan $uhost d
+}
+
+proc msg:start_answer_delay {nick uhost handle text} {
+  global tu
+  if {$text == $tu(hash)} {
+    start_answer_delay
+    putlog "start_answer_delay"
+  }
+}
+
+proc msg:start_game_delay {nick uhost handle text} {
+  global tu
+  if {$text == $tu(hash)} {
+    start_game_delay
+    putlog "start_game_delay"
+  }
+}
+
+# generic procedures
+proc notice {target text} {
+  puthelp "NOTICE $target :$text"
+}
+
+proc msg {target text} {
+  puthelp "PRIVMSG $target :$text"
+}
+
+# specific procedures
+# get_questions - collect questions from opentdb
+proc get_question {{limit 1}} {
+  # create the socket
+  http::register https 443 tls::socket
+  
+  # configure the socket
+  set url "https://opentdb.com/api.php?encode=base64&type=multiple&amount=$limit"
+  set token [http::geturl $url -timeout 30000]
+  
+  # get the data
+  set status [http::status $token]
+  set answer [http::data $token]
+  
+  # clean up the socket
+  http::cleanup $token
+  http::unregister https
+
+  # return the data as dict
+  return [dict get [::json::json2dict $answer] results]
+}
+
+proc start_game {} {
+  global tr td tu botnick
+  incr tu(round)
+  
+  # get a new trivia question
+  set data [lindex [get_question] 0]
+  
+  # set up the data
+  set answers [dict get $data incorrect_answers]
+  set td(question) [::base64::decode [dict get $data question]]
+  set td(correct) [::base64::decode [dict get $data correct_answer]]
+  set td(incorrect) [list [::base64::decode [lindex $answers 0]] [::base64::decode [lindex $answers 1]] [::base64::decode [lindex $answers 2]]]
+  set td(category) [::base64::decode [dict get $data category]]
+  set td(difficulty) [::base64::decode [dict get $data difficulty]]
+  
+  set td(answer) [rand 4]
+  set td(points) [get_points $td(category) $td(difficulty)]
+  set tu(hash) [md5 $td(question)]
+
+  # shuffle the answer 
+  set td(answers) [linsert $td(incorrect) $td(answer) "$td(correct) *"]
+  
+  # start the game in the channel
+  msg $tr(chan) " "
+  msg $tr(chan) "Round \043$tu(round) starting now! Category is $td(category). Difficulty is $td(difficulty). $td(points) point(s) up for grabs!"
+  msg $tr(chan) "$td(question)"
+  msg $tr(chan) "A. [lindex $td(answers) 0]"
+  msg $tr(chan) "B. [lindex $td(answers) 1]"
+  msg $tr(chan) "C. [lindex $td(answers) 2]"
+  msg $tr(chan) "D. [lindex $td(answers) 3]"
+  msg $tr(chan) "You have $tr(answer.delay) seconds to put in your vote: A, B, C, or D."
+  msg $botnick "start_answer_delay $tu(hash)"
+  msg $tr(chan) " "
+}
+
+proc start_answer_delay {} {
+  global tr
+  # stop the old timer if it's running, a new game has started (probably)
+  foreach item [utimers] {
+    if {([lindex $item 1] == "start_game") || ([lindex $item 1] == "start_game")} {
+      killutimer [lindex $item 2]
+    }
+  }
+  
+  # now start a new timer
+  utimer $tr(answer.delay) end_game
+}
+
+proc start_game_delay {} {
+  global tr
+  # stop the old timer if it's running, a new game has started (probably)
+  foreach item [utimers] {
+    if {([lindex $item 1] == "start_game") || ([lindex $item 1] == "start_game")} {
+      killutimer [lindex $item 2]
+    }
+  }
+  
+  # now start a new timer
+  utimer $tr(game.delay) start_game
+}
+
+proc end_game {} {
+  global tr td tt tu th botnick
+  set winner ""
+  foreach item [array names tt *:answer] {
+    set nick $tu([lindex [split $item :] 0]:nick)
+    if {[letter_to_number $tt($item)] == $td(answer)} {
+      set winner [linsert $winner 0 $nick,]
+      incr tu([string tolower $nick]:points) $td(points)
+      incr tu([string tolower $nick]:won) 1
+    } else {
+      incr tu([string tolower $nick]:lost) 1
+    }
+  }
+  
+  set tu(hash) [md5 [unixtime]]
+  
+  msg $tr(chan) " "
+  msg $tr(chan) "Times up! The correct answer was [string toupper [number_to_letter $td(answer)]]. $td(correct)."
+  msg $tr(chan) "Found [llength $winner] winner(s) ([string trim $winner ,]). They have been awarded $td(points) point(s)."
+  msg $tr(chan) "The next game will start in $tr(game.delay) seconds!"
+  msg $botnick "start_game_delay $tu(hash)"
+  msg $tr(chan) " "
+  
+  set tt(tmp) 1
+  unset tt
+  unset td
+  
+}
+
+proc get_answer {nick chan uhost answer} {
+  global tr td tt tu
+  if {([string tolower $chan] != $tr(chan)) || (!$tr(status)) || (![info exists td(question)])} {
+    # if we aren't on the trivia channel, the trivia is turned off, or there is no current game .. continue
+    return
+  } elseif {[info exists tt([string tolower $nick]:answer)]} {
+    notice $nick "You have already submitted an answer, sorry."
+  } else {
+    set tt([string tolower $nick]:answer) $answer
+    set tt([string tolower $nick]:date) [unixtime]
+    set tu([string tolower $nick]:nick) $nick
+    set tu([string tolower $nick]:uhost) $uhost
+    notice $nick "Your answer ([string toupper $answer]. [letter_to_answer $answer]) has been recorded."
+  }
+}
+
+proc get_points {category difficulty} {
+  if {[string tolower $difficulty] == "easy"} {
+    return 1
+  } elseif {[string tolower $difficulty] == "medium"} {
+    return 2
+  } else {
+    return 5
+  }
+}
+
+proc letter_to_number {answer} {
+  if {[string tolower $answer] == "a"} {
+    return 0
+  } elseif {[string tolower $answer] == "b"} {
+    return 1
+  } elseif {[string tolower $answer] == "c"} {
+    return 2
+  } elseif {[string tolower $answer] == "d"} {
+    return 3
+  }
+}
+
+proc number_to_letter {answer} {
+  if {[string tolower $answer] == 0} {
+    return "A"
+  } elseif {[string tolower $answer] == 1} {
+    return "B"
+  } elseif {[string tolower $answer] == 2} {
+    return "C"
+  } elseif {[string tolower $answer] == 3} {
+    return "D"
+  }
+}
+
+proc letter_to_answer {answer} {
+  global td
+  if {[string tolower $answer] == "a"} {
+    return [lindex $td(answers) 0]
+  } elseif {[string tolower $answer] == "b"} {
+    return [lindex $td(answers) 1]
+  } elseif {[string tolower $answer] == "c"} {
+    return [lindex $td(answers) 2]
+  } elseif {[string tolower $answer] == "d"} {
+    return [lindex $td(answers) 3]
+  }
+}
+
+
+
+
+
+
+
+
+
