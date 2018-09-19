@@ -13,12 +13,22 @@ bind msg - start_game_delay msg:start_game_delay
 # channel commands
 proc pub:trivia {nick uhost handle chan text} {
   global tr
-  if {[string tolower [lindex $text 0]] == "on"} {
+  if {([string tolower [lindex $text 0]] == "on") && ($tr(status) == 1)} {
+    msg $tr(chan) "!NOTICE! Trivia is already playing, you can't start it again!"
+  } elseif {[string tolower [lindex $text 0]] == "on"} {
     set tr(status) 1
     msg $tr(chan) "!NOTICE! Trivia has been started by $nick ($uhost)."
+    start_game
   } elseif {[string tolower [lindex $text 0]] == "off"} {
     set tr(status) 0
     msg $tr(chan) "!NOTICE! Trivia has been stopped by $nick ($uhost)."
+    
+    # stop the old timer if it's running, a new game has started (probably)
+    foreach item [utimers] {
+      if {([lindex $item 1] == "start_game") || ([lindex $item 1] == "end_game")} {
+        killutimer [lindex $item 2]
+      }
+    }
   } else {
     notice $nick "Invalid request: You need to specify a status (on/off)."
   }
@@ -63,7 +73,7 @@ proc msg:start_answer_delay {nick uhost handle text} {
   global tu
   if {$text == $tu(hash)} {
     start_answer_delay
-    putlog "start_answer_delay"
+    putlog "% TRIVIA: CMD START_ANSWER_DELAY INITIALISED"
   }
 }
 
@@ -71,7 +81,7 @@ proc msg:start_game_delay {nick uhost handle text} {
   global tu
   if {$text == $tu(hash)} {
     start_game_delay
-    putlog "start_game_delay"
+    putlog "% TRIVIA: CMD START_GAME_DELAY INITIALISED"
   }
 }
 
@@ -126,7 +136,7 @@ proc start_game {} {
   set tu(hash) [md5 $td(question)]
 
   # shuffle the answer 
-  set td(answers) [linsert $td(incorrect) $td(answer) "$td(correct) *"]
+  set td(answers) [linsert $td(incorrect) $td(answer) "$td(correct)"]
   
   # start the game in the channel
   msg $tr(chan) " "
@@ -145,7 +155,7 @@ proc start_answer_delay {} {
   global tr
   # stop the old timer if it's running, a new game has started (probably)
   foreach item [utimers] {
-    if {([lindex $item 1] == "start_game") || ([lindex $item 1] == "start_game")} {
+    if {[lindex $item 1] == "start_game"} {
       killutimer [lindex $item 2]
     }
   }
@@ -158,7 +168,7 @@ proc start_game_delay {} {
   global tr
   # stop the old timer if it's running, a new game has started (probably)
   foreach item [utimers] {
-    if {([lindex $item 1] == "start_game") || ([lindex $item 1] == "start_game")} {
+    if {[lindex $item 1] == "start_game"} {
       killutimer [lindex $item 2]
     }
   }
@@ -190,10 +200,20 @@ proc end_game {} {
   msg $botnick "start_game_delay $tu(hash)"
   msg $tr(chan) " "
   
+  
   set tt(tmp) 1
   unset tt
   unset td
   
+  # stop the old timer if it's running, a new game has started (probably)
+  foreach item [utimers] {
+    if {[lindex $item 1] == "end_game"} {
+      killutimer [lindex $item 2]
+    }
+  }
+  
+  # after every game we'll save the scoreboard
+  array_save tu "$tr(eggdrop)/$tr(script)/trivia.data"
 }
 
 proc get_answer {nick chan uhost answer} {
@@ -259,11 +279,15 @@ proc letter_to_answer {answer} {
   }
 }
 
-
-
-
-
-
-
-
+proc array_save {array file} {
+  eval global $array
+  if {[file exists $file]} {
+    file delete $file
+  }
+  set wfile [open $file w]
+  puts $wfile "# Array Database Backup for $array -- written [clock format [clock seconds] -format "%a %b %d %H:%M:%S %Y"]"
+  puts $wfile "global $array"
+  puts $wfile [list array set $array [array get $array]]
+  close $wfile
+}
 
