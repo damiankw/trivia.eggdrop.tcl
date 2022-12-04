@@ -195,7 +195,11 @@ proc end_game {} {
   
   msg $tr(chan) " "
   msg $tr(chan) "Times up! The correct answer was [string toupper [number_to_letter $td(answer)]]. $td(correct)."
-  msg $tr(chan) "Found [llength $winner] winner(s) ([string trim $winner ,]). They have been awarded $td(points) point(s)."
+  if {[llength $winner] > 0} {
+    msg $tr(chan) "Found [llength $winner] winner(s) ([string trim $winner ,]). They have been awarded $td(points) point(s)."
+  } else {
+    msg $tr(chan) "Found 0 winners. No one has been awarded any points."
+  }
   msg $tr(chan) "The next game will start in $tr(game.delay) seconds!"
   msg $botnick "start_game_delay $tu(hash)"
   msg $tr(chan) " "
